@@ -1,0 +1,274 @@
+# GPU Critical Section Emulation - Code Changes
+
+Since standard `git diff` is unavailable, here is a reconstructed diff showing all the modifications made across the AMDVLK and LLPC driver files to implement the internal GPU lock buffer logic.
+
+```diff
+--- a/vulkandriver/drivers/llpc/include/vkgcDefs.h
++++ b/vulkandriver/drivers/llpc/include/vkgcDefs.h
+@@ -236,2 +236,3 @@
+   DescHeapBufferBindingId = 32,  ///< Binding ID of internal buffer for buffer descriptor heap.
+   DescHeapImageBindingId = 33,   ///< Binding ID of internal buffer for image descriptor heap.
+   DescHeapSamplerBindingId = 34, ///< Binding ID of internal buffer for sampler descriptor heap.
++  CriticalSectionBufferBindingId = 35, ///< Binding ID of internal buffer for GPU critical section locks
+ };
+```
+
+```diff
+--- a/vulkandriver/drivers/xgl/icd/api/include/vk_device.h
++++ b/vulkandriver/drivers/xgl/icd/api/include/vk_device.h
+@@ -558,2 +558,15 @@
+     bool IsGlobalGpuVaEnabled() const
+         { return m_useGlobalGpuVa; }
+ 
++    // Critical Section Lock Buffer
++    VK_FORCEINLINE InternalMemory* GetCriticalSectionMemory()
++        { return &m_criticalSectionMemory; }
++
++    VK_FORCEINLINE bool IsCriticalSectionEnabled() const
++        { return m_criticalSectionEnabled; }
++
++    Pal::gpusize GetCriticalSectionGpuVa(int32_t deviceIdx) const
++        { return m_criticalSectionMemory.GpuVirtAddr(deviceIdx); }
++
++    Pal::gpusize GetCriticalSectionBufferSize() const
++        { return m_criticalSectionBufferSize; }
++
+     Pal::PrtFeatureFlags GetPrtFeatures() const;
+@@ -1043,2 +1056,7 @@
+     VkShaderModule m_nullFragmentModule;
+ 
++    // GPU critical section lock buffer
++    InternalMemory                      m_criticalSectionMemory;
++    bool                                m_criticalSectionEnabled;
++    Pal::gpusize                        m_criticalSectionBufferSize;
++
+     // This goes last.  The memory for the rest of the array is calculated dynamically based on the number of GPUs in
+```
+
+```diff
+--- a/vulkandriver/drivers/xgl/icd/api/vk_device.cpp
++++ b/vulkandriver/drivers/xgl/icd/api/vk_device.cpp
+@@ -296,3 +296,6 @@
+     m_pNullPipelineLayout(nullptr),
+     m_pNullFragmentLib(nullptr),
+-    m_nullFragmentModule(VK_NULL_HANDLE)
++    m_nullFragmentModule(VK_NULL_HANDLE),
++    m_criticalSectionMemory(),
++    m_criticalSectionEnabled(false),
++    m_criticalSectionBufferSize(0)
+ {
+@@ -1486,2 +1489,44 @@
+ 
++    // Allocate critical section lock buffer (always enabled, pre-allocated for max 4K resolution)
++    if (result == VK_SUCCESS)
++    {
++        // Default: allocate for max 4K resolution (3840 x 2160 x 4 bytes = ~33MB)
++        // Each pixel gets a uint32_t lock word for atomic compare-and-swap
++        constexpr Pal::gpusize maxWidth  = 3840;
++        constexpr Pal::gpusize maxHeight = 2160;
++        m_criticalSectionBufferSize = maxWidth * maxHeight * sizeof(uint32_t);
++
++        InternalMemCreateInfo allocInfo = {};
++        allocInfo.pal.size      = m_criticalSectionBufferSize;
++        allocInfo.pal.alignment = 256; // 256-byte alignment for GPU atomics
++        allocInfo.pal.priority  = Pal::GpuMemPriority::Normal;
++        allocInfo.flags.persistentMapped = true;
++
++        // Use CPU-visible pool so we can zero-init via CPU map
++        MemMgr()->GetCommonPool(InternalPoolCpuVisible, &allocInfo);
++
++        VkResult csResult = MemMgr()->AllocGpuMem(
++            allocInfo,
++            &m_criticalSectionMemory,
++            GetPalDeviceMask(),
++            VK_OBJECT_TYPE_DEVICE,
++            ApiDevice::IntValueFromHandle(ApiDevice::FromObject(this)));
++
++        if (csResult == VK_SUCCESS)
++        {
++            m_criticalSectionEnabled = true;
++
++            // Zero-initialize the lock buffer (all locks unlocked)
++            for (uint32_t deviceIdx = 0; deviceIdx < NumPalDevices(); deviceIdx++)
++            {
++                void* pCpuAddr = m_criticalSectionMemory.CpuAddr(deviceIdx);
++                if (pCpuAddr != nullptr)
++                {
++                    memset(pCpuAddr, 0, static_cast<size_t>(m_criticalSectionBufferSize));
++                }
++            }
++        }
++        // Non-fatal: if allocation fails, just disable the feature
++    }
++
+     return result;
+@@ -1859,2 +1904,9 @@
+ 
++    // Free critical section lock buffer
++    if (m_criticalSectionEnabled)
++    {
++        MemMgr()->FreeGpuMem(&m_criticalSectionMemory);
++        m_criticalSectionEnabled = false;
++    }
++
+     DestroyBorderColorPalette();
+```
+
+```diff
+--- a/vulkandriver/drivers/xgl/icd/api/include/vk_pipeline_layout.h
++++ b/vulkandriver/drivers/xgl/icd/api/include/vk_pipeline_layout.h
+@@ -69,2 +69,5 @@
+         uint32_t debugPrintfRegBase;
+ 
++        // Base user data register index for critical section lock buffer BDA (64-bit address = 2 DWORDs)
++        uint32_t criticalSectionRegBase;
++
+         // Base user data register index to use for thread group order reversal state
+@@ -287,2 +290,9 @@
+ 
++    static void BuildLlpcCriticalSectionMapping(
++        const uint32_t                 stageMask,
++        const uint32_t                 offsetInDwords,
++        const uint32_t                 sizeInDwords,
++        Vkgc::ResourceMappingRootNode* pRootNode,
++        uint32_t*                      pRootNodeCount);
++
+ protected:
+```
+
+```diff
+--- a/vulkandriver/drivers/xgl/icd/api/vk_pipeline_layout.cpp
++++ b/vulkandriver/drivers/xgl/icd/api/vk_pipeline_layout.cpp
+@@ -393,2 +393,14 @@
+     }
+ 
++    // Reserve 2 user data registers for critical section lock buffer BDA (64-bit address)
++    if (pDevice->IsCriticalSectionEnabled())
++    {
++        pPipelineInfo->numUserDataNodes                += 1;
++        pCommonUserDataLayout->criticalSectionRegBase  = pInfo->userDataRegCount;
++        pInfo->userDataRegCount                        += 2; // 64-bit GPU VA = 2 DWORDs
++    }
++    else
++    {
++        pCommonUserDataLayout->criticalSectionRegBase = InvalidReg;
++    }
++
+     // Allocate user data for the thread group reversal state
+@@ -647,2 +659,14 @@
+ 
++    // Reserve 2 user data registers for critical section lock buffer BDA (64-bit address)
++    if (pDevice->IsCriticalSectionEnabled())
++    {
++        pPipelineInfo->numUserDataNodes                += 1;
++        pCommonUserDataLayout->criticalSectionRegBase  = pInfo->userDataRegCount;
++        pInfo->userDataRegCount                        += 2; // 64-bit GPU VA = 2 DWORDs
++    }
++    else
++    {
++        pCommonUserDataLayout->criticalSectionRegBase = InvalidReg;
++    }
++
+     // Allocate user data for the thread group reversal state
+@@ -1248,2 +1272,23 @@
+ 
++// =====================================================================================================================
++// Builds the LLPC resource mapping for the critical section lock buffer.
++// Uses DescriptorBufferCompact (2 DWORDs = raw 64-bit BDA) to pass the GPU VA inline.
++void PipelineLayout::BuildLlpcCriticalSectionMapping(
++    const uint32_t                 stageMask,
++    const uint32_t                 offsetInDwords,
++    const uint32_t                 sizeInDwords,
++    Vkgc::ResourceMappingRootNode* pRootNode,
++    uint32_t*                      pRootNodeCount)
++{
++    // DescriptorBufferCompact: 2 DWORDs holding the raw 64-bit GPU VA
++    pRootNode->node.type               = Vkgc::ResourceMappingNodeType::DescriptorBufferCompact;
++    pRootNode->node.offsetInDwords     = offsetInDwords;
++    pRootNode->node.sizeInDwords       = sizeInDwords;
++    pRootNode->node.srdRange.set       = Vkgc::InternalDescriptorSetId;
++    pRootNode->node.srdRange.binding   = Vkgc::CriticalSectionBufferBindingId;
++    pRootNode->visibility              = stageMask;
++
++    ++(*pRootNodeCount);
++}
++
+ // =====================================================================================================================
+@@ -1372,2 +1417,14 @@
+ 
++    // Build mapping for critical section lock buffer
++    if (m_pDevice->IsCriticalSectionEnabled() &&
++        commonUserDataLayout.criticalSectionRegBase != InvalidReg)
++    {
++        BuildLlpcCriticalSectionMapping(
++            stageMask,
++            commonUserDataLayout.criticalSectionRegBase,
++            2u, // 64-bit GPU VA = 2 DWORDs
++            &pUserDataNodes[userDataNodeCount],
++            &userDataNodeCount);
++    }
++
+     // TODO: Build the internal push constant resource mapping
+@@ -1666,2 +1723,14 @@
+ 
++    // Build mapping for critical section lock buffer (indirect scheme)
++    if (m_pDevice->IsCriticalSectionEnabled() &&
++        commonUserDataLayout.criticalSectionRegBase != InvalidReg)
++    {
++        BuildLlpcCriticalSectionMapping(
++            stageMask,
++            commonUserDataLayout.criticalSectionRegBase,
++            2u, // 64-bit GPU VA = 2 DWORDs
++            &pUserDataNodes[userDataNodeCount],
++            &userDataNodeCount);
++    }
++
+     // Build mapping for each set of descriptors
+```
+
+```diff
+--- a/vulkandriver/drivers/xgl/icd/api/vk_compute_pipeline.cpp
++++ b/vulkandriver/drivers/xgl/icd/api/vk_compute_pipeline.cpp
+@@ -888,2 +888,18 @@
+ 
++        // Inject critical section lock buffer GPU VA into user data SGPRs
++        if (m_pDevice->IsCriticalSectionEnabled() &&
++            m_userDataLayout.common.criticalSectionRegBase != PipelineLayout::InvalidReg)
++        {
++            const Pal::gpusize csGpuVa = m_pDevice->GetCriticalSectionGpuVa(deviceIdx);
++            const uint32_t csUserData[2] = {
++                static_cast<uint32_t>(csGpuVa & 0xFFFFFFFF),
++                static_cast<uint32_t>(csGpuVa >> 32)
++            };
++            pCmdBuffer->PalCmdBuffer(deviceIdx)->CmdSetUserData(
++                Pal::PipelineBindPoint::Compute,
++                m_userDataLayout.common.criticalSectionRegBase,
++                2,
++                csUserData);
++        }
+     }
+ }
+```
+
+```diff
+--- a/vulkandriver/drivers/xgl/icd/api/vk_graphics_pipeline.cpp
++++ b/vulkandriver/drivers/xgl/icd/api/vk_graphics_pipeline.cpp
+@@ -2160,2 +2160,18 @@
+ 
++        // Inject critical section lock buffer GPU VA into user data SGPRs
++        if (m_pDevice->IsCriticalSectionEnabled() &&
++            m_userDataLayout.common.criticalSectionRegBase != PipelineLayout::InvalidReg)
++        {
++            const Pal::gpusize csGpuVa = m_pDevice->GetCriticalSectionGpuVa(deviceIdx);
++            const uint32_t csUserData[2] = {
++                static_cast<uint32_t>(csGpuVa & 0xFFFFFFFF),
++                static_cast<uint32_t>(csGpuVa >> 32)
++            };
++            pCmdBuffer->PalCmdBuffer(deviceIdx)->CmdSetUserData(
++                Pal::PipelineBindPoint::Graphics,
++                m_userDataLayout.common.criticalSectionRegBase,
++                2,
++                csUserData);
++        }
+         if ((oldHash != newHash)
+```
