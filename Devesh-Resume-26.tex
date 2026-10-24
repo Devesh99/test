@@ -1,0 +1,108 @@
+\documentclass{resume} % Use the custom resume.cls style
+
+% Charter font: classic, highly legible serif with clear lining figures
+% (fixes ambiguous digit shapes from the class's default font)
+\usepackage[T1]{fontenc}
+\usepackage{charter}
+
+\usepackage{fontawesome5}
+\usepackage{enumitem}
+\usepackage{amssymb}
+\usepackage[left=0.4in,top=0.4in,right=0.4in,bottom=0.4in]{geometry} % Document margins
+
+% Change the URL color to black (hyperref is already loaded by resume.cls)
+\hypersetup{urlcolor=black} 
+
+\newcommand{\tab}[1]{\hspace{.266\textwidth}\rlap{#1}} 
+\newcommand{\itab}[1]{\hspace{0em}\rlap{#1}}
+\usepackage{multicol}
+\setlength{\multicolsep}{-3.0pt}
+
+\name{Devesh Varma} % Your name
+
+% Consolidated header information
+\address{
+    \href{https://www.linkedin.com/in/deveshv99/}{\faIcon{linkedin} linkedin.com/in/deveshv99} \\ 
+    \href{https://www.github.com/Devesh99}{\faIcon{github} github.com/Devesh99}
+}
+\address{
+    \href{mailto:deveshmvarma@gmail.com}{deveshmvarma@gmail.com} \\ 
+    \faIcon{mobile-alt} +91 98336 13330 \\ 
+    \faIcon{map-marker-alt} Bengaluru, India
+}
+
+\begin{document}
+
+\begin{rSection}{SKILLS}
+\begin{tabularx}{\linewidth}{ @{} >{\bfseries}l @{\hspace{2ex}} >{\raggedright\arraybackslash}X }
+Languages  & C, C++, Python \\
+Compilers \& Graphics & LLVM, MLIR, SPIR-V, Vulkan, Graphics Compilers, Compiler Optimization \\
+Tools and Technologies & Git, Gerrit, CUDA, \LaTeX \\
+AI-Assisted Development & GitHub Copilot, Agentic AI Coding Tools, Automated Compiler-Correctness Test Generation \\
+Other & Database Systems, Computer Graphics
+\end{tabularx}
+\end{rSection}
+
+\begin{rSection}{EXPERIENCE}
+
+\textbf{Samsung Semiconductor} \hfill {\emph{Bengaluru, India}}
+\\ \emph{Associate Staff Engineer} \hfill {\emph{March 2026 - Present}}
+\begin{itemize}[noitemsep, leftmargin=*]
+    \item Implemented the \texttt{VK\_EXT\_fragment\_shader\_interlock} Vulkan extension end to end, from the xgl layer down to the compiler layer. Since there was no hardware support, emulated the critical section in software.
+\end{itemize}
+\vspace{0.1cm}
+\emph{Senior Engineer} \hfill {\emph{August 2024 - March 2026}}
+\begin{itemize}[noitemsep, leftmargin=*]
+    \item Increased FPS by 1.76\% on the Aztec Normal benchmark for Samsung's AMD RDNA-based Xclipse GPU by optimizing the motion-blur shader.
+    \item Collaborated cross-functionally to debug, profile, and resolve GPU driver performance bottlenecks.
+\end{itemize}
+
+\end{rSection}
+
+\begin{rSection}{OPEN SOURCE CONTRIBUTIONS}
+
+\textbf{SPIRV-Interpreter} \hfill{\emph{August 2025} \href{https://github.com/mmoult/SPIRV-Interpreter/pull/24}{\makebox[0.25cm][l]{\faIcon{github}}}}
+\begin{itemize}[noitemsep, leftmargin=*]
+    \item Fixed the OpSMod instruction and implemented OpSRem per the SPIR-V specification to correct modulo arithmetic behavior, addressing maintainer feedback across multiple review rounds.
+\end{itemize}
+\vspace{0.15cm}
+
+\textbf{SPIRV-Cross (Khronos Group)} \hfill{\emph{February 2026} \href{https://github.com/KhronosGroup/SPIRV-Cross/pull/2602}{\makebox[0.25cm][l]{\faIcon{github}}}}
+\begin{itemize}[noitemsep, leftmargin=*]
+    \item Refactored the CLI's help output into categorized flags, replacing a single overwhelming interface.
+\end{itemize}
+
+\end{rSection}
+
+\begin{rSection}{PROJECTS}
+
+\textbf{An MLIR based compiler for Efficient Database Systems} \hfill{\emph{M.Tech Thesis} \href{https://github.com/deveshv-99/mlir-HashJoin}{\makebox[0.25cm][l]{\faIcon{github}}}}
+\\ \emph{Mentor: Prof. R. Govindarajan} \hfill{\emph{May 2023 - June 2024}}
+\begin{itemize}[noitemsep, leftmargin=*]
+    \item Implemented a GPU-targeted hash-join algorithm in MLIR using the Linalg and SCF dialects, lowering through LLVM IR to GPU kernels, with a nested-loop join baseline for comparison.
+    \item Benchmarked joins on relations of up to 100M rows; an optimized second iteration cut kernel execution time by 25\% (2.0s to 1.5s) for a 10M-row join producing over 1 billion output rows, profiled using NVIDIA Nsight.
+\end{itemize}
+\vspace{0.15cm}
+
+\textbf{Optimized Matrix Multiplication} \hfill{\emph{Course Project} \href{https://github.com/deveshv-99/Optimized-Matrix-Multiplication-}{\makebox[0.25cm][l]{\faIcon{github}}}}
+\\ \emph{Mentor: Prof. Arkaprava Basu \& R. Govindarajan} \hfill{\emph{Sept - Oct 2022}}
+\begin{itemize}[noitemsep, leftmargin=*]
+    \item Identified performance bottlenecks in the reference implementation and built optimized single-threaded, multi-threaded, and CUDA versions by exploiting spatial locality and memory prefetching.
+    \item Achieved up to 20x speedup over the single-threaded CPU baseline.
+\end{itemize}
+
+\end{rSection}
+
+\begin{rSection}{EDUCATION} 
+
+{\bf Indian Institute of Science, Bangalore} \hfill {\textit{August 2022 - June 2024}}\\
+\emph{Master of Technology in Computer Science and Engineering} \hfill {\bf GPA: 7.7}
+\\ \emph{GATE 2022: All India Rank 110 among 77,257 candidates}
+\vspace{0.15cm}
+
+{\bf Thakur College of Engineering and Technology}, University of Mumbai \hfill {\emph{August 2017 - July 2021}}\\
+\emph{B.E in Computer Engineering} \hfill {\bf GPA: 9.49}
+
+\end{rSection}
+
+\end{document}
